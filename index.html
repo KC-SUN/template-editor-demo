@@ -839,9 +839,147 @@
     cursor:pointer;display:flex;align-items:center;gap:6px;
   }
   .restart-fab:hover{color:var(--text);border-color:var(--accent-strong);}
+
+  /* Email + password gate: a real access screen shown before the prototype itself. Two
+     required fields — email (validated for format, then best-effort delivered to the Google
+     Form below) and a shared password (validated against PROTO_GATE_PASSWORD right here in
+     this page's JS). This is still client-side only (no server exists here to enforce it) —
+     the password lives in this page's own source, so anyone who reads it or opens dev tools
+     could find it or just remove the "hidden" class. That's the honest ceiling for a static,
+     backend-free page like this: it stops casual/uninvited visitors, it does not withstand a
+     determined one. localStorage remembers a successful unlock (not sessionStorage) so a
+     returning visitor who already got through once isn't asked again on a later visit — safe
+     here because this file is always viewed as a real, separately-hosted page (GitHub Pages or
+     a published Artifact), never the in-conversation Cowork preview that the no-browser-storage
+     rule is about.
+
+     Email delivery specifically: submitting to Google Forms' own formResponse endpoint via a
+     hidden iframe-targeted <form> POST (see submitEmailToGoogleForm below) — this works from a
+     plain static page like the GitHub Pages copy, since a form POST isn't subject to the CORS
+     restrictions a fetch()/XHR call would hit. It does NOT work from this Cowork Artifact: the
+     Artifact's content-security-policy blocks connections to outside hosts (the same
+     restriction that blocked directly embedding the form earlier), so here the gate still
+     validates and unlocks correctly, it just can't actually deliver the email to the Sheet. */
+  #pw-gate{
+    position:fixed;inset:0;z-index:1000;background:var(--bg);
+    display:flex;align-items:center;justify-content:center;padding:24px;
+    overflow-y:auto;
+  }
+  #pw-gate.hidden{display:none;}
+  .gate-card{
+    max-width:380px;width:100%;background:var(--surface);border:1px solid var(--border);
+    border-radius:12px;box-shadow:var(--shadow);padding:32px 30px;text-align:center;
+    max-height:calc(100vh - 48px);overflow-y:auto;margin:auto;
+  }
+  .gate-card h1{font-size:19px;margin:0 0 8px;color:var(--text);}
+  .gate-card p{font-size:13px;color:var(--text-muted);margin:0 0 20px;line-height:1.5;}
+  /* Labels/help text sit left-aligned against the field they describe, even though the rest
+     of the card (h1/intro copy/button/error) stays centered — see .gate-card's own
+     text-align:center above. */
+  .gate-card .field-label, .gate-card .gate-field, .gate-card .field-help{text-align:left;}
+  .gate-card .field-label{margin-top:14px;}
+  .gate-card .field-label:first-of-type{margin-top:0;}
+  .gate-field{margin-bottom:0;}
+  .gate-card .field-help{margin:6px 0 0;}
+  .gate-unlock-btn{width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:20px;}
+  .gate-error{font-size:12.5px;color:var(--danger);margin-top:10px;min-height:1em;}
 </style>
 
 <!-- ============================================================ APP SHELL ============================================================ -->
+<!-- Email + password gate — see its CSS comment above for the reasoning/limits.
+     PROTO_GATE_PASSWORD below is the one shared password; GOOGLE_EMAIL_ENTRY_ID is the Google
+     Form's field id for Email (get it via the form's ⋮ menu → "Get pre-filled link") — until
+     that's filled in, email is still validated and required to unlock, it just isn't delivered
+     anywhere yet. Copy is deliberately explicit that the password is NOT the client's own
+     Placements.io account password — it's a separate access code their account manager/sales
+     contact gave them just for this preview, called out both in the label and in the help text
+     right under the field so it can't be mistaken for a login prompt. -->
+<div id="pw-gate">
+  <div class="gate-card">
+    <h1>Welcome to the Prototype</h1>
+    <p>Thanks for taking a look. Enter your email below along with the access code your Placements.io account manager or salesperson shared with you to get started.</p>
+    <label class="field-label" for="gate-email-input">Email</label>
+    <input type="email" class="text-input gate-field" id="gate-email-input" placeholder="you@company.com" autocomplete="email">
+    <label class="field-label" for="gate-pw-input">Access Code</label>
+    <input type="password" class="text-input gate-field" id="gate-pw-input" placeholder="Provided by your account manager" autocomplete="off">
+    <div class="field-help">This is not your Placements.io account password — it's a separate code shared with you just for this preview.</div>
+    <button class="btn btn-accent gate-unlock-btn" id="gate-unlock-btn">Unlock Prototype →</button>
+    <div class="gate-error" id="gate-error"></div>
+  </div>
+</div>
+<script>
+(function(){
+  var PROTO_GATE_PASSWORD = 'wysiwyg2026';
+  var GATE_UNLOCKED_KEY = 'proto_gate_unlocked_v1';
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  // Google Form delivery (see the CSS comment above for why this only works from GitHub Pages,
+  // not this Artifact). GOOGLE_EMAIL_ENTRY_ID is intentionally blank until you get it from the
+  // form's "Get pre-filled link" option — submitEmailToGoogleForm no-ops safely until then.
+  var GOOGLE_FORM_ACTION_URL = 'https://docs.google.com/forms/d/e/1FAIpQLSeVO-PLIDjMMe2SWRy32eSZ3p-tqLL3XNcV1xQKa7i3MphqfA/formResponse';
+  var GOOGLE_EMAIL_ENTRY_ID = 'entry.503732342';
+
+  function submitEmailToGoogleForm(email){
+    if(!GOOGLE_EMAIL_ENTRY_ID) return;
+    try{
+      var iframe = document.getElementById('gate-hidden-iframe');
+      if(!iframe){
+        iframe = document.createElement('iframe');
+        iframe.name = 'gate-hidden-iframe';
+        iframe.id = 'gate-hidden-iframe';
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+      }
+      var form = document.createElement('form');
+      form.action = GOOGLE_FORM_ACTION_URL;
+      form.method = 'POST';
+      form.target = 'gate-hidden-iframe';
+      var field = document.createElement('input');
+      field.type = 'hidden';
+      field.name = GOOGLE_EMAIL_ENTRY_ID;
+      field.value = email;
+      form.appendChild(field);
+      document.body.appendChild(form);
+      form.submit();
+      form.remove();
+    }catch(e){ /* best-effort only — never blocks unlocking the prototype either way */ }
+  }
+
+  var gate = document.getElementById('pw-gate');
+  var emailInput = document.getElementById('gate-email-input');
+  var pwInput = document.getElementById('gate-pw-input');
+  var unlockBtn = document.getElementById('gate-unlock-btn');
+  var errorEl = document.getElementById('gate-error');
+  if(!gate) return;
+  try{
+    if(localStorage.getItem(GATE_UNLOCKED_KEY) === '1'){ gate.classList.add('hidden'); }
+  }catch(e){ /* private browsing / storage blocked — gate just asks again every visit, which is fine */ }
+
+  function attempt(){
+    var email = (emailInput.value || '').trim();
+    var pw = (pwInput.value || '').trim().toLowerCase();
+    if(!EMAIL_RE.test(email)){
+      errorEl.textContent = 'Please enter a valid email address.';
+      emailInput.focus();
+      return;
+    }
+    if(pw !== PROTO_GATE_PASSWORD.toLowerCase()){
+      errorEl.textContent = 'That access code isn\'t right — please check with your account manager or salesperson and try again.';
+      pwInput.value = '';
+      pwInput.focus();
+      return;
+    }
+    submitEmailToGoogleForm(email);
+    try{ localStorage.setItem(GATE_UNLOCKED_KEY, '1'); }catch(e){}
+    gate.classList.add('hidden');
+    errorEl.textContent = '';
+  }
+  if(unlockBtn) unlockBtn.addEventListener('click', attempt);
+  [emailInput, pwInput].forEach(function(el){
+    if(el) el.addEventListener('keydown', function(e){ if(e.key === 'Enter') attempt(); });
+  });
+})();
+</script>
 <!-- Persistent brand header: lives OUTSIDE #view-list / #view-editor so it renders on every
      page, including the template editor (which used to start directly at .ed-top with no
      Placements ai header above it — see the #app-shell / flex:1 comments on the CSS side). -->
